@@ -21,6 +21,11 @@ function favicon () {
   return utils.extractFilename(config.get('application.favicon'))
 }
 
+function escapeUsername (str: string) {
+  const escaped = (str ?? '').replace(/(?<!\\)([#!]\{)/g, '\\$1')
+  return escaped.startsWith('\\') ? escaped : '\\' + escaped
+}
+
 export function getUserProfile () {
   return async (req: Request, res: Response, next: NextFunction) => {
     let template: string
@@ -51,17 +56,17 @@ export function getUserProfile () {
 
     let username = user.username
 
-    if (username?.match(/#{(.*)}/) !== null && utils.isChallengeEnabled(challenges.usernameXssChallenge)) {
+    if (Boolean(username?.match(/#{(.*)}/)) && utils.isChallengeEnabled(challenges.usernameXssChallenge)) {
       req.app.locals.abused_ssti_bug = true
       const code = username?.substring(2, username.length - 1)
       try {
-        if (!code) {
-          throw new Error('Username is null')
+        if (!code || code.includes('#{') || code.includes('!{')) {
+          throw new Error('Username is null or unsafe')
         }
-        const singleQuoteRegex = /^'(?:[^'\\]|\\.)*'$/
-        const doubleQuoteRegex = /^"(?:[^"\\]|\\.)*"$/
-        const backtickRegex = /^`(?:[^`\\$]|\\.|\$(?!{))*`$/
-        const numericRegex = /^-?\d+(?:\.\d+)?$/
+        const singleQuoteRegex = /^'(?:[^'\\#!]|\\.|#(?!{)|!(?!{))*'$/
+        const doubleQuoteRegex = /^"(?:[^"\\#!]|\\.|#(?!{)|!(?!{))*"$/
+        const backtickRegex = /^`(?:[^`\\$#!]|\\.|\$(?!{)|#(?!{)|!(?!{))*`$/
+        const numericRegex = /^[0-9+\-*/%().\s]+$/
         const booleanRegex = /^(?:true|false|null|undefined)$/
 
         const isSafe = singleQuoteRegex.test(code) ||
@@ -73,12 +78,16 @@ export function getUserProfile () {
         if (!isSafe) {
           throw new Error('Unsafe code execution blocked')
         }
-        username = eval(code) // eslint-disable-line no-eval
+        const evaluated = String(eval(code)) // eslint-disable-line no-eval
+        if (evaluated.includes('#{') || evaluated.includes('!{')) {
+          throw new Error('Unsafe code execution blocked')
+        }
+        username = evaluated
       } catch (err) {
-        username = '\\' + username
+        username = escapeUsername(user.username ?? '')
       }
     } else {
-      username = '\\' + username
+      username = escapeUsername(username ?? '')
     }
 
     const themeKey = config.get<string>('application.theme') as keyof typeof themes
